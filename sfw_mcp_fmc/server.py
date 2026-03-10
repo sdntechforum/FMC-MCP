@@ -8,7 +8,7 @@ import json
 import os
 from dataclasses import replace
 import inspect
-from typing import Any, Dict, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from fastmcp import FastMCP
 
@@ -27,6 +27,7 @@ SERVER_INSTRUCTIONS = (
     "Use list_fmc_profiles first to discover available FMC instances (env mode exposes a single "
     "default profile). Pass the chosen profile id/alias as fmc_profile or omit it to let the server "
     "use its default. All tools are read-only:\n"
+    "• list_ftd_devices lists all FTD devices managed by the FMC.\n"
     "• find_rules_by_ip_or_fqdn searches one access policy by id.\n"
     "• find_rules_for_target resolves an FTD/HA/cluster target to its assigned access/prefilter "
     "policies before searching them.\n"
@@ -79,6 +80,45 @@ def create_client(profile_key: Optional[str], *, domain_uuid_override: Optional[
         settings = FMCSettings.from_env()
         _client_cache[cache_key] = FMCClient(settings)
     return _client_cache[cache_key]
+
+
+@mcp.tool()
+async def list_ftd_devices(
+    domain_uuid: Optional[str] = None,
+    fmc_profile: Optional[str] = None,
+) -> Dict[str, Any]:
+    """List all FTD (Firepower Threat Defense) devices managed by this FMC."""
+    try:
+        client = create_client(fmc_profile, domain_uuid_override=domain_uuid)
+        await client.ensure_domain_uuid()
+
+        devices = await client.list_device_records(limit=1000, hard_page_limit=10, expanded=True)
+
+        # Build a concise summary for each device
+        result: List[Dict[str, Any]] = []
+        for d in devices:
+            entry: Dict[str, Any] = {
+                "id": d.get("id"),
+                "name": d.get("name"),
+                "hostName": d.get("hostName"),
+                "type": d.get("type"),
+                "model": d.get("model"),
+                "healthStatus": d.get("healthStatus"),
+                "managementState": d.get("managementState"),
+                "deploymentStatus": d.get("deploymentStatus"),
+                "isConnected": d.get("isConnected"),
+            }
+            if d.get("accessPolicy"):
+                ap = d["accessPolicy"]
+                entry["accessPolicy"] = {"id": ap.get("id"), "name": ap.get("name")}
+            if d.get("ftdMode"):
+                entry["ftdMode"] = d["ftdMode"]
+            result.append(entry)
+
+        return {"devices": result, "count": len(result)}
+    except Exception as exc:
+        logger.exception("Unexpected error in list_ftd_devices")
+        return {"error": {"category": "UNEXPECTED", "message": str(exc)}}
 
 
 @mcp.tool()
